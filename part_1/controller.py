@@ -45,7 +45,8 @@ constructor defaults. Tuning only inside ``run_case_part1.py`` will pass your
 own runs but fail the checks.
 """
 import numpy as np
-
+from simulation.utils import Rz, angle_diff
+from part_1.config import PIDGains, M
 
 class DPController:
     """
@@ -54,13 +55,25 @@ class DPController:
     Students may implement any type of controller (PID, LQR, backstepping,
     ...). Only compute() is required; everything else is optional.
     """
+    
 
     def __init__(self, *args, **kwargs):
-        pass
+        gains = PIDGains()
+        self.Kp = np.diag(gains.Kp)
+        self.Ki = np.diag(gains.Ki)
+        self.Kd = np.diag(gains.Kd)
+        self.int_ned = np.zeros(2)
+        self.int_psi = 0.0
+
+        # Diagonal mass/inertia for the inertia feedforward term below.
+        # Matches the same diagonal-only simplification Kp/Kd already use.
+        self.M_diag = np.array([M[0, 0], M[1, 1], M[2, 2]])
 
     def reset(self) -> None:
         """Optional: reset internal states (integrators, filters) before a run."""
-        pass
+        #pass
+        self.int_ned = np.zeros(2)
+        self.int_psi = 0.0
 
     def compute(
         self,
@@ -71,8 +84,75 @@ class DPController:
         eta_ref: np.ndarray,
         nu_ref: np.ndarray | None = None,
         acc_ref: np.ndarray | None = None,
-    ) -> np.ndarray:
-        # TODO: Replace this placeholder with your DP controller.
-        # Return the (6,) desired BODY wrench — fill in tau_d[0] = Fx,
-        # tau_d[1] = Fy, tau_d[5] = Mz and leave the rest zero.
-        return np.zeros(6)
+    ):
+
+        if nu_ref is None:
+            nu_ref = np.zeros(6)
+
+        psi = eta[5]
+        R = Rz(psi) # NED = R @ body (3x3) -> [N,E,psi]
+
+        #position/heading error, NED -> BODY
+        e_ned = np.array([eta_ref[0]-eta[0],
+                          eta_ref[1]-eta[1],
+                          angle_diff(eta_ref[5], eta[5])
+                          ])
+        e_body = R.T @ e_ned
+
+        #velocity error: nu_ref is NED, rotate to BODY before comparing with nu
+        nu_ref_body = R.T @ np.array([nu_ref[0], nu_ref[1], nu_ref[5]])
+        e_nu = nu_ref_body - np.array([nu[0], nu[1], nu[5]])
+
+        # inertia feedforward: acc_ref is NED, rotate to BODY, then M*a.
+        # Anticipates the force needed to match the reference's acceleration
+        # instead of only reacting once a tracking error has built up --
+        # this is what actually closes the r-tracking lag, not more damping.
+        acc_ref_body = R.T @ np.array([acc_ref[0], acc_ref[1], acc_ref[5]])
+        tau_ff = self.M_diag * acc_ref_body
+
+        # integral (kept in NED, then rotated)
+        self._last_int_inc = e_ned * dt  # undone by apply_external_aw if saturated
+        self.int_ned += e_ned[:2] * dt
+        self.int_psi += e_ned[2] * dt
+        i_ned = np.array([self.int_ned[0],
+                          self.int_ned[1],
+                          self.int_psi
+                          ])
+        i_body = R.T @ i_ned
+
+        tau3 = self.Kp @ e_body + self.Kd @ e_nu + self.Ki @ i_body + tau_ff
+        self._last_tau_cmd3 = tau3.copy()  # full commanded wrench, FF included
+
+        tau_d = np.zeros(6)
+        tau_d[0], tau_d[1], tau_d[5] = tau3
+
+        self.last_pid_body = {
+            "P": np.zeros(6), "I": np.zeros(6), "D": np.zeros(6), "FF": np.zeros(6)
+        }
+        self.last_pid_body["P"][[0,1,5]] = self.Kp @ e_body
+        self.last_pid_body["I"][[0,1,5]] = self.Ki @ i_body
+        self.last_pid_body["D"][[0,1,5]] = self.Kd @ e_nu
+        self.last_pid_body["FF"][[0,1,5]] = tau_ff
+
+        return tau_d
+    
+    def apply_external_aw(self, tau_applied, psi, dt):
+        tau_applied3 = np.array([
+            tau_applied[0], 
+            tau_applied[1], 
+            tau_applied[5]
+            ])
+        
+        tau_cmd3 = self._last_tau_cmd3#np.array([
+            #self.last_pid_body["P"][0]+self.last_pid_body["I"][0]+self.last_pid_body["D"][0],
+            #self.last_pid_body["P"][1]+self.last_pid_body["I"][1]+self.last_pid_body["D"][1],
+            #self.last_pid_body["P"][5]+self.last_pid_body["I"][5]+self.last_pid_body["D"][5]
+            #])
+        
+        # Conditional integration: if the thrusters could not deliver the
+        # command, undo this step's integration instead of back-calculating
+        # (back-calculation drove I to cancel P after large steps).
+        unachieved = tau_cmd3 - tau_applied3
+        if np.linalg.norm(unachieved) > 1e-3 * max(np.linalg.norm(tau_cmd3), 1.0):
+            self.int_ned -= self._last_int_inc[:2]
+            self.int_psi -= self._last_int_inc[2]

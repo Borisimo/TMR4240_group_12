@@ -51,10 +51,22 @@ class Current:
                  beta_end: float | None = None, duration: float = 0.0):
         # TODO: Store and use the parameters above in step().
         self.speed = float(speed)
-        self.beta = float(beta)
-        self.semantics = semantics
-        self.beta_end = beta_end
         self.duration = float(duration)
+
+        # Normalising everything to the "towards" convention
+        if semantics == "from":
+            offset = np.pi
+        elif semantics == "towards":
+            offset = 0.0
+        else:
+            raise ValueError(
+                f"semantics must be 'towards' or 'from', got {semantics!r}"
+            )
+
+        self.beta = float(beta) + offset
+        self.beta_end = (
+            None if beta_end is None else float(beta_end) + offset
+        )
 
     def step(
         self,
@@ -63,6 +75,21 @@ class Current:
         eta: np.ndarray,
         nu: np.ndarray,
     ) -> np.ndarray:
-        # TODO: Replace this placeholder with your current model.
-        # Default: no current.
-        return np.zeros(6)
+        
+        # Direction at time t constant, or linearly ramped over
+        if self.beta_end is None:
+            angle = self.beta
+        else:
+            frac = 0.0 if self.duration <= 0.0 else np.clip(t / self.duration, 0.0, 1.0)
+            angle = self.beta + frac * (self.beta_end - self.beta)
+
+        # Speed and direction
+        V_N = self.speed * np.cos(angle)
+        V_E = self.speed * np.sin(angle)
+
+        # Generalized vector to return
+        nu_c_ned = np.zeros(6)
+        nu_c_ned[0] = V_N
+        nu_c_ned[1] = V_E
+
+        return nu_c_ned

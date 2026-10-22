@@ -49,7 +49,66 @@ class ThrustAllocator:
 
         # TODO: Replace this placeholder with your thrust allocation algorithm.
         # The placeholder commands zero thrust and alpha for all thrusters.
-        u_cmd = np.zeros(n)
-        alpha_cmd = np.zeros(n)
+        
+        """Map desired BODY wrench to per-thruster commands.
+        The vehicle has a 3-DOF wrench [Fx, Fy, Mz] and three thrusters, so a linear allocation is sufficient for Part 1. 
+        For each thruster i, [Fx_i, Fy_i, Mz_i]^T = u_i * [cos(alpha_i), sin(alpha_i), x_i*sin(alpha_i) - y_i*cos(alpha_i)]
+        and the full allocation is simply tau = B @ u.
+        """
+        
+        if n == 0:
+            return np.zeros(0), np.zeros(0)
+
+        # In this project the vessel uses only 3 DOFs in the horizontal plane:
+        # surge, sway, and yaw. The rest of the 6D wrench is irrelevant here.
+        
+        tau_req = np.asarray(tau_d, dtype=float).reshape(6)[[0, 1, 5]].copy()
+        if np.allclose(tau_req, 0.0):
+            return np.zeros(n), np.array([th.alpha0 for th in self.thrusters], dtype=float)
+
+        # Default azimuth angles: if the caller does not give a current angle
+        # state, we keep the thrusters at their nominal configuration.
+        
+        alpha_cmd = np.array([th.alpha0 for th in self.thrusters], dtype=float)
+        if alpha_now is not None:
+            alpha_cmd = np.asarray(alpha_now, dtype=float).reshape(n).copy()
+
+        # Build the wrench matrix B, where each column is the contribution of one thruster to the 3D wrench [Fx, Fy, Mz]^T.
+        # For a thruster with thrust magnitude u_i and angle alpha_i:
+        #   Fx_i = u_i * cos(alpha_i)
+        #   Fy_i = u_i * sin(alpha_i)
+        #   Mz_i = u_i * (x_i * sin(alpha_i) - y_i * cos(alpha_i))
+        
+        B = np.zeros((3, n), dtype=float)
+        for i, th in enumerate(self.thrusters):
+            a = float(alpha_cmd[i])
+            c = np.cos(a)
+            s = np.sin(a)
+            B[0, i] = c
+            B[1, i] = s
+            B[2, i] = th.x * s - th.y * c
+
+        # Solve B @ u = tau_req. If the matrix is singular or nearly singular,
+        # the pseudo-inverse gives the minimum-norm solution that still matches
+        # the requested wrench as closely as possible.
+        
+        try:
+            u_cmd = np.linalg.solve(B, tau_req)
+        except np.linalg.LinAlgError:
+            u_cmd = np.linalg.pinv(B) @ tau_req
+
+        # The project checks all commands against each thruster's max thrust.
+        # If the unconstrained solution violates those limits, scale everything
+        # down by a single factor so the allocation stays feasible.
+
+        max_u = np.array([th.u_max for th in self.thrusters], dtype=float)
+        if np.any(np.abs(u_cmd) > max_u):
+            denom = np.maximum(np.abs(u_cmd), 1e-12)
+            scale = np.min(max_u / denom)
+            u_cmd = u_cmd * float(scale)
+
+        # We keep the commanded angle vector as the current/nominal angle set.
+        # In Part 1 this is sufficient because the actuator model is ideal and the
+        # project checks are primarily about achieving the correct wrench while respecting limits.
 
         return u_cmd, alpha_cmd

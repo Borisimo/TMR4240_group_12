@@ -111,7 +111,7 @@ class PIDGains:
         ])
 
 
-def default_thrusters_gunnerus3() -> list[ThrusterConfig]:
+def default_thrusters_part_2() -> list[ThrusterConfig]:
     """Three-thruster Gunnerus layout from the project description (Table 3)."""
     return [
         ThrusterConfig("Tunnel_Bow", "tunnel",  x=+12.0, y=0.0,

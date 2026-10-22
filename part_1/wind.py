@@ -87,11 +87,40 @@ class Wind:
                  tau_slow: float = 120.0, seed: int | None = None):
         # TODO: Store and use the parameters above in step().
         self.mean_speed = float(mean_speed)
-        self.beta = float(beta)
-        self.semantics = semantics
         self.sigma_slow = float(sigma_slow)
         self.tau_slow = float(tau_slow)
-        self.seed = seed
+
+        if semantics == "from":
+            offset = np.pi
+        elif semantics == "towards":
+            offset = 0.0
+        else:
+            raise ValueError(
+                f"semantics must be 'towards' or 'from', got {semantics!r}"
+            )
+        self.beta_towards = float(beta) + offset
+
+        # Loading the coefficients
+        self._alpha_deg, self._C6 = load_wind_coefficients()
+
+        # Seeded RNG
+        self._rng = np.random.default_rng(seed)
+
+        # State of slowly warying wind speed component that stays consistent with every run
+        self._u_slow = 0.0
+
+    def _interp_coeff(self, alpha_rw_deg: float) -> np.ndarray:
+        """Interpolate C(alpha) at given relative wind angle [deg], wrapping correctly across the 0 - 369 deg boundary."""
+        alpha = alpha_rw_deg % 360.0
+
+        alpha_ext = np.concatenate(
+            ([self._alpha_deg[-1] - 360.0], self._alpha_deg, [self._alpha_deg[0] + 360.0])
+        )
+        C_ext = np.vstack([self._C6[-1], self._C6, self._C6[0]])
+        return np.array([
+            np.interp(alpha, alpha_ext, C_ext[:,j]) for j in range(6)
+        ])
+
 
     def step(
         self,
@@ -100,8 +129,38 @@ class Wind:
         eta: np.ndarray,
         nu: np.ndarray,
     ) -> Tuple[np.ndarray, Dict[str, float]]:
-        # TODO: Replace this placeholder with your wind load model.
-        # Default: no wind loads.
-        tau_w6 = np.zeros(6)
-        info = {"U": 0.0, "beta_ned": 0.0, "alpha_body": 0.0}
+        psi = eta[5]
+        u, v = nu[0], nu[1]
+
+        # Total speed U(t).
+        if self.sigma_slow > 0.0 and self.tau_slow > 0.0 and dt > 0.0:
+            a = np.exp(-dt / self.tau_slow)
+            b = self.sigma_slow * np.sqrt(1.0 - a ** 2)
+            self._u_slow = a * self._u_slow + b * self._rng.standard_normal()
+        U = self.mean_speed + self._u_slow
+
+        # Ambient wind, NED components
+        V_wN = U * np.cos(self.beta_towards)
+        V_wE = U * np.sin(self.beta_towards)
+
+        # Rotating ambient wind NED -> BODY.
+        c, s = np.cos(psi), np.sin(psi)
+        V_wb_x = c * V_wN + s * V_wE
+        V_wb_y = -s * V_wN + c * V_wE
+
+        # Relative wind = ambient (body) - vessel velocity.
+        V_rw_x = V_wb_x - u
+        V_rw_y = V_wb_y - v
+        U_rw = np.hypot(V_rw_x, V_rw_y)
+        alpha_rw = np.arctan2(V_rw_y, V_rw_x)  # rad, body frame
+
+        # Interpolating coefficients (table is in degrees) and applying force law
+        C = self._interp_coeff(np.degrees(alpha_rw))
+        tau_w6 = U_rw ** 2 * C
+
+        info = {
+            "U": U,
+            "beta_ned": self.beta_towards % (2 * np.pi),
+            "alpha_body": alpha_rw,
+        }
         return tau_w6, info

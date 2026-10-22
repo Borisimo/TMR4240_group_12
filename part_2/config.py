@@ -61,7 +61,7 @@ class RefAxisConfig:
     # TODO (students): wn below is a placeholder, NOT a tuned value. Choose
     # the natural frequency yourself and justify it in the report (see the
     # project text, Reference Model section).
-    wn: float = 0.022#0.03                     # natural frequency [rad/s] (to be tuned)
+    wn: float = 0.03#22#0.03                     # natural frequency [rad/s] (to be tuned)
     zeta: float = 1.0                   # damping ratio [-]
     rate_limit: Optional[float] = None  # max |x_dot| (m/s or rad/s); None = off
 
@@ -76,7 +76,7 @@ M_RB, M_A = data["Mrb"], data["Ma"]
 D_l, D_u, D_v, D_r = data["Dl"], data["Du"], data["Dv"], data["Dr"]
 M = M_RB + M_A
 
-
+"""
 @dataclass
 class PIDGains:
     wn_N   = 0.123    #0.1150
@@ -109,7 +109,39 @@ class PIDGains:
             2*self.zeta_E*self.wn_E * M[1,1] - D_l[1,1], 
             2*self.zeta_psi*self.wn_psi * M[2,2] - D_l[2,2]
         ])
+"""
+@dataclass
+class PIDGains:
+    wn_N   = 0.130    #0.1150
+    wn_E   = 0.430    #0.1170
+    wn_psi = 0.650    #0.0860
 
+    zeta_N   = 1.5  #1.4
+    zeta_E   = 6.0  #1.4
+    zeta_psi = 7.0  #1.4
+
+    Kp: np.ndarray = field(init=False)
+    Ki: np.ndarray = field(init=False)
+    Kd: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        self.Kp = np.array([
+            self.wn_N**2 * M[0,0], 
+            self.wn_E**2 * M[1,1], 
+            self.wn_psi**2 * M[2,2]
+        ])
+            
+        self.Ki = np.array([
+            (self.wn_N/15) * self.Kp[0], 
+            (self.wn_E/15) * self.Kp[1], 
+            (self.wn_psi/15) * self.Kp[2]
+        ])
+            
+        self.Kd = np.array([
+            2*self.zeta_N*self.wn_N * M[0,0] - D_l[0,0], 
+            2*self.zeta_E*self.wn_E * M[1,1] - D_l[1,1], 
+            2*self.zeta_psi*self.wn_psi * M[2,2] - D_l[2,2]
+        ])
 
 
 def default_thrusters_gunnerus3() -> list[ThrusterConfig]:

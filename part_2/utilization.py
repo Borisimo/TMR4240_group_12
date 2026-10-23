@@ -30,24 +30,37 @@ import numpy as np
 def thrust_utilization(logs, thrusters) -> np.ndarray:
     """Instantaneous thrust utilisation U_T(t) in percent, from ACTUAL thrusts.
 
-    TODO (students): implement the definition above — the sum of the
-    magnitudes of the individual actuator forces (``logs.u``, one column per
-    thruster) as a percentage of the sum of the maximum nominal thrusts of
-    all active thrusters (``ThrusterConfig.u_max``).  Return one value per
-    time sample, shape ``(len(logs.t),)``.
+    The signed actual thrusts are converted to magnitudes before summing.
     """
-    raise NotImplementedError(
-        "implement thrust_utilization() in part_2/utilization.py — the "
-        "definition is in the project text (Part 2, Simulation 5)")
+    times = np.asarray(logs.t, dtype=float).reshape(-1)
+    thrusts = np.asarray(logs.u, dtype=float)
+    limits = np.asarray([thruster.u_max for thruster in thrusters], dtype=float)
+    if times.size == 0:
+        raise ValueError("logs.t must contain at least one sample")
+    if thrusts.shape != (times.size, limits.size):
+        raise ValueError(
+            "logs.u must have shape (len(logs.t), len(thrusters)); "
+            f"got {thrusts.shape}"
+        )
+    if limits.size == 0 or not np.all(np.isfinite(limits)) or np.any(limits <= 0.0):
+        raise ValueError("thrusters must have positive finite maximum thrust")
+    if not np.all(np.isfinite(times)) or not np.all(np.isfinite(thrusts)):
+        raise ValueError("logs.t and logs.u must contain only finite values")
+
+    return 100.0 * np.sum(np.abs(thrusts), axis=1) / np.sum(limits)
 
 
 def average_utilization(logs, thrusters, t_from: float | None = None) -> float:
     """Average thrust utilisation [%] over ``t >= t_from`` (default: the second
     half of the run, so the transient is excluded).
 
-    TODO (students): implement — the time average of
-    :func:`thrust_utilization` over the evaluation window.
     """
-    raise NotImplementedError(
-        "implement average_utilization() in part_2/utilization.py — the "
-        "definition is in the project text (Part 2, Simulation 5)")
+    times = np.asarray(logs.t, dtype=float).reshape(-1)
+    utilization = thrust_utilization(logs, thrusters)
+    start = (times[0] + times[-1]) / 2.0 if t_from is None else float(t_from)
+    if not np.isfinite(start):
+        raise ValueError("t_from must be finite")
+    selected = utilization[times >= start]
+    if selected.size == 0:
+        raise ValueError("the evaluation window contains no time samples")
+    return float(np.mean(selected))

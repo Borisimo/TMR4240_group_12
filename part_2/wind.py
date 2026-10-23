@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Dict, Tuple
 import numpy as np
 
+from simulation.utils import wrap_angle_pi
+
 _WIND_COEFF_FILE = Path(__file__).resolve().parent.parent / "data" / "wind_coeff.csv"
 
 
@@ -62,13 +64,13 @@ def load_wind_coefficients() -> Tuple[np.ndarray, np.ndarray]:
 
 
 class Wind:
-    """Template for student wind model.
+    """Wind loads with slow speed variation, gusts, and bounded direction noise.
 
     Constructor contract — the automated checks (``python check.py``,
-    ``pytest``, ``notebooks/part_1_demo.ipynb``) construct your model with
-    this signature, so keep it working:
+    ``pytest``) construct this model with the parameters below.
 
-        Wind(mean_speed, beta, semantics=..., sigma_slow=..., seed=...)
+        Wind(mean_speed, beta, semantics=..., sigma_slow=..., gust=...,
+             gust_params=..., sigma_dir=..., tau_dir=..., dir_limit=..., seed=...)
 
     Parameters
     ----------
@@ -79,16 +81,43 @@ class Wind:
     sigma_slow : standard deviation of the slowly-varying wind speed
         component [m/s] (required in Part 1; 0 disables it).
     tau_slow : time constant of the slow variation [s].
-    seed : random seed for the slow component, so runs are reproducible.
+    gust : enable zero-mean gust-speed variation.
+    gust_params : optional ``{"sigma": ..., "tau": ...}`` gust standard
+        deviation [m/s] and time constant [s].
+    sigma_dir : standard deviation of the slowly varying direction [rad].
+    tau_dir : direction time constant [s].
+    dir_limit : maximum absolute direction excursion from the mean [rad].
+    seed : random seed for all varying components, so runs are reproducible.
     """
 
     def __init__(self, mean_speed: float = 0.0, beta: float = 0.0, *,
                  semantics: str = "from", sigma_slow: float = 0.0,
-                 tau_slow: float = 120.0, seed: int | None = None):
-        # TODO: Store and use the parameters above in step().
+                 tau_slow: float = 120.0, gust: bool = False,
+                 gust_params: Dict[str, float] | None = None,
+                 sigma_dir: float = 0.0, tau_dir: float = 300.0,
+                 dir_limit: float = np.deg2rad(5.0),
+                 seed: int | None = None):
         self.mean_speed = float(mean_speed)
         self.sigma_slow = float(sigma_slow)
         self.tau_slow = float(tau_slow)
+        self.gust = bool(gust)
+        self.gust_params = {"sigma": 1.0, "tau": 5.0}
+        if gust_params is not None:
+            unknown = set(gust_params) - self.gust_params.keys()
+            if unknown:
+                raise ValueError(f"unknown gust parameter(s): {sorted(unknown)}")
+            self.gust_params.update(gust_params)
+        self.sigma_dir = float(sigma_dir)
+        self.tau_dir = float(tau_dir)
+        self.dir_limit = float(dir_limit)
+        if self.sigma_slow < 0.0 or self.tau_slow <= 0.0:
+            raise ValueError("sigma_slow must be non-negative and tau_slow > 0")
+        if self.sigma_dir < 0.0 or self.tau_dir <= 0.0:
+            raise ValueError("sigma_dir must be non-negative and tau_dir > 0")
+        if self.dir_limit < 0.0:
+            raise ValueError("dir_limit must be non-negative")
+        if self.gust_params["sigma"] < 0.0 or self.gust_params["tau"] <= 0.0:
+            raise ValueError("gust sigma must be non-negative and tau > 0")
 
         if semantics == "from":
             offset = np.pi
@@ -100,27 +129,21 @@ class Wind:
             )
         self.beta_towards = float(beta) + offset
 
-        # Loading the coefficients
         self._alpha_deg, self._C6 = load_wind_coefficients()
-
-        # Seeded RNG
         self._rng = np.random.default_rng(seed)
-
-        # State of slowly warying wind speed component that stays consistent with every run
         self._u_slow = 0.0
+        self._u_gust = 0.0
+        self._dir_slow = 0.0
 
     def _interp_coeff(self, alpha_rw_deg: float) -> np.ndarray:
-        """Interpolate C(alpha) at given relative wind angle [deg], wrapping correctly across the 0 - 369 deg boundary."""
+        """Interpolate C(alpha) at a relative wind angle, wrapping at 360°."""
         alpha = alpha_rw_deg % 360.0
 
         alpha_ext = np.concatenate(
             ([self._alpha_deg[-1] - 360.0], self._alpha_deg, [self._alpha_deg[0] + 360.0])
         )
         C_ext = np.vstack([self._C6[-1], self._C6, self._C6[0]])
-        return np.array([
-            np.interp(alpha, alpha_ext, C_ext[:,j]) for j in range(6)
-        ])
-
+        return np.array([np.interp(alpha, alpha_ext, C_ext[:, j]) for j in range(6)])
 
     def step(
         self,
@@ -129,38 +152,57 @@ class Wind:
         eta: np.ndarray,
         nu: np.ndarray,
     ) -> Tuple[np.ndarray, Dict[str, float]]:
+        eta = np.asarray(eta, dtype=float).reshape(6)
+        nu = np.asarray(nu, dtype=float).reshape(6)
+        if dt <= 0.0:
+            raise ValueError("dt must be greater than zero")
         psi = eta[5]
         u, v = nu[0], nu[1]
 
-        # Total speed U(t).
-        if self.sigma_slow > 0.0 and self.tau_slow > 0.0 and dt > 0.0:
+        if self.sigma_slow > 0.0:
             a = np.exp(-dt / self.tau_slow)
-            b = self.sigma_slow * np.sqrt(1.0 - a ** 2)
+            b = self.sigma_slow * np.sqrt(1.0 - a**2)
             self._u_slow = a * self._u_slow + b * self._rng.standard_normal()
-        U = self.mean_speed + self._u_slow
+        U_mean = self.mean_speed + self._u_slow
 
-        # Ambient wind, NED components
-        V_wN = U * np.cos(self.beta_towards)
-        V_wE = U * np.sin(self.beta_towards)
+        if self.gust and self.gust_params["sigma"] > 0.0:
+            a_gust = np.exp(-dt / self.gust_params["tau"])
+            b_gust = self.gust_params["sigma"] * np.sqrt(1.0 - a_gust**2)
+            self._u_gust = a_gust * self._u_gust + b_gust * self._rng.standard_normal()
+        else:
+            self._u_gust = 0.0
+        U_gust = self._u_gust
+        U = U_mean + U_gust
 
-        # Rotating ambient wind NED -> BODY.
+        if self.sigma_dir > 0.0 and self.dir_limit > 0.0:
+            a_dir = np.exp(-dt / self.tau_dir)
+            b_dir = self.sigma_dir * np.sqrt(1.0 - a_dir**2)
+            self._dir_slow = a_dir * self._dir_slow + b_dir * self._rng.standard_normal()
+            self._dir_slow = float(np.clip(self._dir_slow, -self.dir_limit, self.dir_limit))
+        else:
+            self._dir_slow = 0.0
+        beta_towards = wrap_angle_pi(self.beta_towards + self._dir_slow)
+
+        V_wN = U * np.cos(beta_towards)
+        V_wE = U * np.sin(beta_towards)
+
         c, s = np.cos(psi), np.sin(psi)
         V_wb_x = c * V_wN + s * V_wE
         V_wb_y = -s * V_wN + c * V_wE
 
-        # Relative wind = ambient (body) - vessel velocity.
         V_rw_x = V_wb_x - u
         V_rw_y = V_wb_y - v
         U_rw = np.hypot(V_rw_x, V_rw_y)
-        alpha_rw = np.arctan2(V_rw_y, V_rw_x)  # rad, body frame
+        alpha_rw = np.arctan2(V_rw_y, V_rw_x)
 
-        # Interpolating coefficients (table is in degrees) and applying force law
         C = self._interp_coeff(np.degrees(alpha_rw))
-        tau_w6 = U_rw ** 2 * C
+        tau_w6 = U_rw**2 * C
 
         info = {
             "U": U,
-            "beta_ned": self.beta_towards % (2 * np.pi),
+            "beta_ned": beta_towards % (2 * np.pi),
             "alpha_body": alpha_rw,
+            "U_mean": U_mean,
+            "U_gust": U_gust,
         }
         return tau_w6, info

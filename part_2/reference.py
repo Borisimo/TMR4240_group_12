@@ -29,8 +29,8 @@ model here directly enables velocity/acceleration feedforward there.
 from typing import Tuple
 import numpy as np
 
-# Per-axis tuning parameters live with the rest of the Part 1 configuration.
-from part_1.config import RefAxisConfig
+# Per-axis tuning parameters live with the Part 2 configuration.
+from part_2.config import RefAxisConfig
 
 
 class ReferenceModel:

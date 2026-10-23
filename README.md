@@ -298,7 +298,7 @@ The `part_2/` templates are intentionally minimal: copy your *implementation log
 Nothing you are asked to tune lives inside `simulation/` or `models/`; the engines only wire your blocks together. Every tunable parameter lives in **`part_1/config.py`** and **`part_2/config.py`**:
 
 - `SimConfig` / `Part2SimConfig` — time step `dt`, duration `T`, and the switches: `use_reference`, `use_controller`, `use_observer`, `observer_type`, `use_sensor_noise`, `thruster_dynamics`, `bypass_actuators` (a debug mode that applies `tau_d` directly).
-- `RefAxisConfig` — natural frequency `wn`, damping `zeta` and an optional `rate_limit` per reference axis. **None of the shipped values is a tuned value**: choose all three and justify them. The Part 2 file says so on all three fields; the Part 1 file flags only `wn`, because it was released before this note existed, but the same applies there.
+- `RefAxisConfig` — natural frequency `wn`, damping `zeta` and an optional `rate_limit` per reference axis. Part 2 currently uses `wn = 0.4 rad/s` to meet the public smooth-start check; choose and justify the remaining values, and review all Part 1 settings for your design.
 - `default_thrusters_gunnerus3()` / `default_thrusters_part_2()` — the thruster geometry and limits given in the assignment.
 - **Your own dataclasses.** This is the place to add `PIDGains`, allocation weights, observer gains and environment parameters — anything you tune — so that every simulation can be reconfigured from this one file plus the runner, without touching your model code. Each config file has a `TODO` marking the spot.
 

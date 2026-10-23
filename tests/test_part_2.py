@@ -153,3 +153,44 @@ def test_controller_receives_the_observer_estimates():
     eta_ctrl = np.array([eta for eta, _ in ctl.seen])
     assert np.array_equal(eta_ctrl, logs.eta_measured)      # = spy estimate = measurement
     assert np.array_equal(logs.nu_est, np.tile(_NU_MARKER, (len(logs.t), 1)))
+
+
+def test_part_2_allocator_moves_azimuths_within_actuator_limits():
+    from models.thruster_dynamics import ThrusterSet
+    from part_2.config import default_thrusters_part_2
+    from part_2.thrust_allocation import ThrustAllocator
+
+    thrusters = default_thrusters_part_2()
+    actuators = ThrusterSet(thrusters, dynamics=True)
+    allocator = ThrustAllocator(thrusters)
+    tau_d = np.zeros(6)
+    tau_d[1] = 20e3
+    angles, thrusts = [], []
+    achieved_wrench = None
+
+    for k in range(300):
+        u_cmd, alpha_cmd = allocator.allocate(
+            k * 0.1, 0.1, tau_d,
+            u_now=actuators.get_thrusts(),
+            alpha_now=actuators.get_angles(),
+        )
+        thrust, angle, achieved_wrench = actuators.step(u_cmd, alpha_cmd, 0.1)
+        thrusts.append(thrust)
+        angles.append(angle)
+
+    angles = np.asarray(angles)
+    thrusts = np.asarray(thrusts)
+    angle_steps = np.abs(
+        (np.diff(angles, axis=0) + np.pi) % (2.0 * np.pi) - np.pi
+    )
+    thrust_steps = np.abs(np.diff(thrusts, axis=0))
+    angle_limits = np.array([th.rot_speed for th in thrusters]) * 0.1
+    thrust_rate_limits = np.array([th.u_rate for th in thrusters]) * 0.1
+    thrust_limits = np.array([th.u_max for th in thrusters])
+
+    assert np.ptp(angles[:, 1:], axis=0).min() > 0.5
+    assert np.all(angle_steps <= angle_limits + 1e-9)
+    assert np.all(thrust_steps <= thrust_rate_limits + 1e-6)
+    assert np.all(np.abs(thrusts) <= thrust_limits + 1e-9)
+    assert np.linalg.norm(achieved_wrench[:2] - tau_d[[0, 1]]) < 500.0
+    assert abs(achieved_wrench[2] - tau_d[5]) < 5e3

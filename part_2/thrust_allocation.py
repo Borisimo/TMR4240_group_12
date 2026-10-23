@@ -1,41 +1,35 @@
-"""
-Thrust Allocation template
+"""Rate-aware wrench allocation for the Part 2 Gunnerus thrusters."""
+from __future__ import annotations
 
-Students should implement an algorithm that maps the desired body-frame
-wrench to individual thruster commands. The simulator calls, once per step:
-
-    allocator.allocate(t, dt, tau_d, u_now, alpha_now) -> (u_cmd, alpha_cmd)
-
-Inputs (full actuator state — use what your algorithm needs):
-    t         : current simulation time [s]
-    dt        : time step [s]              (rate-aware/dynamic allocation)
-    tau_d     : (6,) desired BODY wrench [Fx, Fy, Fz, Mx, My, Mz]
-                (the 3-DOF wrench to allocate is tau_d[[0, 1, 5]]
-                 = [Fx, Fy, Mz]; the other components are zero)
-    u_now     : current actual thrusts [N]     (rate-aware allocation)
-    alpha_now : current thruster angles [rad]  (minimize azimuth slewing)
-
-Outputs:
-    u_cmd     : signed thrust command for each thruster [N]
-    alpha_cmd : thruster angle command for each thruster [rad]
-
-Students may implement, for example:
-    - pseudo-inverse allocation,
-    - weighted least-squares allocation,
-    - optimization-based allocation,
-    - power-minimizing allocation.
-"""
 from typing import List, Optional, Tuple
+
 import numpy as np
+from scipy.optimize import minimize
 
 from models.thruster_dynamics import ThrusterConfig
+from simulation.utils import wrap_angle_pi
 
 
 class ThrustAllocator:
-    """Template for student thrust allocation."""
+    """Allocate BODY-frame surge, sway, and yaw requests.
+
+    Azimuth angles are optimization variables. Their per-step change and each
+    thruster's signed force are bounded by the actuator's rotation, thrust-rate,
+    and maximum-thrust limits. Tunnel thrusters retain their fixed geometry.
+    """
 
     def __init__(self, thrusters: List[ThrusterConfig]):
-        self.thrusters = thrusters
+        self.thrusters = list(thrusters)
+
+    @staticmethod
+    def _column(thruster: ThrusterConfig, angle: float) -> np.ndarray:
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([c, s, thruster.x * s - thruster.y * c])
+
+    @staticmethod
+    def _column_derivative(thruster: ThrusterConfig, angle: float) -> np.ndarray:
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([-s, c, thruster.x * c + thruster.y * s])
 
     def allocate(
         self,
@@ -45,70 +39,122 @@ class ThrustAllocator:
         u_now: Optional[np.ndarray] = None,
         alpha_now: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        n = len(self.thrusters)
+        if not np.isfinite(t) or not np.isfinite(dt) or dt <= 0.0:
+            raise ValueError("t must be finite and dt must be finite and greater than zero")
 
-        # TODO: Replace this placeholder with your thrust allocation algorithm.
-        # The placeholder commands zero thrust and alpha for all thrusters.
-        
-        """Map desired BODY wrench to per-thruster commands.
-        The vehicle has a 3-DOF wrench [Fx, Fy, Mz] and three thrusters, so a linear allocation is sufficient for Part 1. 
-        For each thruster i, [Fx_i, Fy_i, Mz_i]^T = u_i * [cos(alpha_i), sin(alpha_i), x_i*sin(alpha_i) - y_i*cos(alpha_i)]
-        and the full allocation is simply tau = B @ u.
-        """
-        
+        n = len(self.thrusters)
         if n == 0:
             return np.zeros(0), np.zeros(0)
 
-        # In this project the vessel uses only 3 DOFs in the horizontal plane:
-        # surge, sway, and yaw. The rest of the 6D wrench is irrelevant here.
-        
-        tau_req = np.asarray(tau_d, dtype=float).reshape(6)[[0, 1, 5]].copy()
-        if np.allclose(tau_req, 0.0):
-            return np.zeros(n), np.array([th.alpha0 for th in self.thrusters], dtype=float)
+        target = np.asarray(tau_d, dtype=float).reshape(6)[[0, 1, 5]]
+        if not np.all(np.isfinite(target)):
+            raise ValueError("tau_d must contain only finite values")
 
-        # Default azimuth angles: if the caller does not give a current angle
-        # state, we keep the thrusters at their nominal configuration.
-        
-        alpha_cmd = np.array([th.alpha0 for th in self.thrusters], dtype=float)
-        if alpha_now is not None:
-            alpha_cmd = np.asarray(alpha_now, dtype=float).reshape(n).copy()
+        thrust_now = (
+            np.zeros(n) if u_now is None
+            else np.asarray(u_now, dtype=float).reshape(n)
+        )
+        angle_now = (
+            np.array([thruster.alpha0 for thruster in self.thrusters], dtype=float)
+            if alpha_now is None
+            else np.asarray(alpha_now, dtype=float).reshape(n)
+        )
+        if not np.all(np.isfinite(thrust_now)) or not np.all(np.isfinite(angle_now)):
+            raise ValueError("current thrusts and angles must contain only finite values")
 
-        # Build the wrench matrix B, where each column is the contribution of one thruster to the 3D wrench [Fx, Fy, Mz]^T.
-        # For a thruster with thrust magnitude u_i and angle alpha_i:
-        #   Fx_i = u_i * cos(alpha_i)
-        #   Fy_i = u_i * sin(alpha_i)
-        #   Mz_i = u_i * (x_i * sin(alpha_i) - y_i * cos(alpha_i))
-        
-        B = np.zeros((3, n), dtype=float)
-        for i, th in enumerate(self.thrusters):
-            a = float(alpha_cmd[i])
-            c = np.cos(a)
-            s = np.sin(a)
-            B[0, i] = c
-            B[1, i] = s
-            B[2, i] = th.x * s - th.y * c
+        maximum = np.array([thruster.u_max for thruster in self.thrusters], dtype=float)
+        rate = np.array([thruster.u_rate for thruster in self.thrusters], dtype=float)
+        if np.any(maximum <= 0.0) or np.any(rate <= 0.0):
+            raise ValueError("thrusters must have positive maximum thrust and thrust rate")
 
-        # Solve B @ u = tau_req. If the matrix is singular or nearly singular,
-        # the pseudo-inverse gives the minimum-norm solution that still matches
-        # the requested wrench as closely as possible.
-        
-        try:
-            u_cmd = np.linalg.solve(B, tau_req)
-        except np.linalg.LinAlgError:
-            u_cmd = np.linalg.pinv(B) @ tau_req
+        low_thrust = np.maximum(-maximum, thrust_now - rate * dt)
+        high_thrust = np.minimum(maximum, thrust_now + rate * dt)
 
-        # The project checks all commands against each thruster's max thrust.
-        # If the unconstrained solution violates those limits, scale everything
-        # down by a single factor so the allocation stays feasible.
+        moving: list[int] = []
+        angle_bounds: list[tuple[float, float]] = []
+        fixed_angles = np.array(
+            [thruster.alpha0 for thruster in self.thrusters], dtype=float
+        )
+        for i, thruster in enumerate(self.thrusters):
+            if thruster.kind.lower() == "tunnel" or thruster.rot_speed == 0.0:
+                continue
+            moving.append(i)
+            max_angle_step = float(thruster.rot_speed) * dt
+            lower, upper = -max_angle_step, max_angle_step
+            if hasattr(thruster, "alpha_min") and hasattr(thruster, "alpha_max"):
+                lower = max(lower, float(thruster.alpha_min) - angle_now[i])
+                upper = min(upper, float(thruster.alpha_max) - angle_now[i])
+            if lower > upper:
+                raise ValueError(
+                    f"current angle for {thruster.name} is outside its allowed limits"
+                )
+            angle_bounds.append((lower, upper))
 
-        max_u = np.array([th.u_max for th in self.thrusters], dtype=float)
-        if np.any(np.abs(u_cmd) > max_u):
-            denom = np.maximum(np.abs(u_cmd), 1e-12)
-            scale = np.min(max_u / denom)
-            u_cmd = u_cmd * float(scale)
+        # Scale thrust decision variables to O(1) and balance translational
+        # force and yaw moment residuals by representative wrench magnitudes.
+        wrench_scale = np.array([
+            max(float(np.sum(maximum)), 1.0),
+            max(float(np.sum(maximum)), 1.0),
+            max(float(np.sum(maximum * np.maximum(
+                1.0, [np.hypot(thruster.x, thruster.y) for thruster in self.thrusters]
+            ))), 1.0),
+        ])
+        thrust_scale = maximum
+        angle_count = len(moving)
+        x0 = np.zeros(n + angle_count)
+        x0[:n] = np.clip(thrust_now, low_thrust, high_thrust) / thrust_scale
+        bounds = [
+            (low_thrust[i] / thrust_scale[i], high_thrust[i] / thrust_scale[i])
+            for i in range(n)
+        ] + angle_bounds
 
-        # We keep the commanded angle vector as the current/nominal angle set.
-        # In Part 1 this is sufficient because the actuator model is ideal and the
-        # project checks are primarily about achieving the correct wrench while respecting limits.
+        # A small regularizer resolves the redundant azimuth choices in favor
+        # of the least-turn solution without materially relaxing wrench tracking.
+        angle_regularization = 1e-4
 
-        return u_cmd, alpha_cmd
+        def evaluate(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            thrust = x[:n] * thrust_scale
+            angles = fixed_angles.copy()
+            for j, i in enumerate(moving):
+                angles[i] = angle_now[i] + x[n + j]
+            achieved = np.zeros(3)
+            jacobian = np.zeros((3, n + angle_count))
+            for i, thruster in enumerate(self.thrusters):
+                column = self._column(thruster, angles[i])
+                achieved += thrust[i] * column
+                jacobian[:, i] = thrust_scale[i] * column
+                if i in moving:
+                    j = moving.index(i)
+                    jacobian[:, n + j] = (
+                        thrust[i] * self._column_derivative(thruster, angles[i])
+                    )
+            return (achieved - target) / wrench_scale, jacobian / wrench_scale[:, None]
+
+        def objective(x: np.ndarray) -> float:
+            residual, _ = evaluate(x)
+            return 0.5 * float(residual @ residual) + 0.5 * angle_regularization * float(
+                x[n:] @ x[n:]
+            )
+
+        def gradient(x: np.ndarray) -> np.ndarray:
+            residual, jacobian = evaluate(x)
+            result = jacobian.T @ residual
+            result[n:] += angle_regularization * x[n:]
+            return result
+
+        solution = minimize(
+            objective,
+            x0,
+            jac=gradient,
+            method="SLSQP",
+            bounds=bounds,
+            options={"maxiter": 40, "ftol": 1e-10},
+        )
+        if not solution.success and not np.all(np.isfinite(solution.x)):
+            raise RuntimeError(f"thrust allocation failed: {solution.message}")
+
+        thrust_cmd = np.clip(solution.x[:n] * thrust_scale, low_thrust, high_thrust)
+        angle_cmd = fixed_angles.copy()
+        for j, i in enumerate(moving):
+            angle_cmd[i] = wrap_angle_pi(angle_now[i] + solution.x[n + j])
+        return thrust_cmd, angle_cmd

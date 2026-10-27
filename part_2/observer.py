@@ -21,7 +21,7 @@ tune them, keeping the tuned parameters as constructor defaults because the
 checks call ``select_observer(kind)`` without arguments.
 """
 from __future__ import annotations
-
+from models.gunnerus_3dof import Gunnerus3DOF
 from dataclasses import dataclass
 import numpy as np
 
@@ -65,12 +65,83 @@ class NonlinearPassiveObserver(Observer):
 
     name = "nonlinear_passive"
 
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(
+            self,
+            w0: float = (2 * np.pi) / 8,
+            zeta: float = 0.1,
+            zeta_n: float = 1.0,
+            wc: float = 1.2 * (2 * np.pi) / 8,
+            T_bias: float = 1000.0,
+            k3: float = 0.1,
+            k4: float = 0.02,
+    ):
+        
+        omega = np.diag([w0, w0, w0])
+        ones = np.ones(3)
+        vessel = Gunnerus3DOF()._v
+        self.M = vessel._Mrb + vessel._Ma
+        self.M_inv = np.linalg.inv(self.M)
+        self.D = vessel._Dl.copy()
+        Z = np.diag([zeta, zeta, zeta])
+        self.A_w = np.block([[np.zeros((3, 3)), np.eye(3)],
+                            [-omega**2, -2 * Z @ omega]])
+        self.C_w = np.hstack([np.zeros((3, 3)), np.eye(3)])
+        self.K1 = np.vstack([np.diag(-2.0 * (zeta_n - zeta) * wc / w0 * ones),
+                            np.diag(2.0 * w0 * (zeta_n - zeta) * ones)])
+        self.K2 = np.diag(wc * ones)
+        self.K4 = np.diag(np.diag(self.M) * k4)
+        self.K3 = k3 * self.K4
+        self.T_inv = np.eye(3) / T_bias
+        self.reset()
+        
+
+    def reset(self, eta0 = None):
+        eta0 = np.zeros(6) if eta0 is None else np.asarray(eta0, dtype=float).reshape(6)
+        self.eta_hat = eta0[[0, 1, 5]].copy()
+        self.nu_hat = np.zeros(3)
+        self.b_hat = np.zeros(3)
+        self.xi_hat = np.zeros(6)
+
+    @staticmethod
+    def _wrap(angle):
+        return (angle + np.pi) % (2 * np.pi) - np.pi
 
     def step(self, t, dt, eta_measured, tau_est):
-        # TODO: implement the nonlinear passive observer.
-        return self._placeholder(eta_measured)
+        y = np.asarray(eta_measured, dtype=float).reshape(6)[[0, 1, 5]]
+        tau = np.asarray(tau_est, dtype=float).reshape(6)[[0, 1, 5]]
+
+        y_hat = self.eta_hat + self.C_w @ self.xi_hat
+        y_tilde = y - y_hat
+        y_tilde[2] = self._wrap(y_tilde[2])
+
+        psi = self.eta_hat[2]
+        c, s = np.cos(psi), np.sin(psi)
+        R = np.array([[c, -s, 0],
+                      [s, c, 0],
+                      [0, 0, 1]])
+
+        xi_dot = self.A_w @ self.xi_hat + self.K1 @ y_tilde
+        eta_dot = R @ self.nu_hat + self.K2 @y_tilde
+        b_dot = - self.T_inv @self.b_hat + self.K3 @ y_tilde
+        nu_dot = self.M_inv @ (-self.D @ self.nu_hat
+                               + R.T @ self.b_hat
+                               + tau
+                               + R.T @ self.K4 @ y_tilde
+                            )
+
+        self.xi_hat = self.xi_hat + dt * xi_dot
+        self.eta_hat = self.eta_hat + dt * eta_dot
+        self.b_hat = self.b_hat + dt * b_dot
+        self.nu_hat = self.nu_hat + dt * nu_dot
+        self.eta_hat[2] = self._wrap(self.eta_hat[2])
+
+        eta = np.zeros(6)
+        nu = np.zeros(6)
+        bias = np.zeros(6)
+        eta[[0, 1, 5]] = self.eta_hat
+        nu[[0, 1, 5]] = self.nu_hat
+        bias[[0, 1, 5]] = self.b_hat
+        return ObserverEstimate(eta=eta, nu=nu, bias=bias)
 
 
 class KalmanFilterObserver(Observer):

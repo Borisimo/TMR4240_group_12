@@ -35,7 +35,7 @@ class RefAxisConfig:
     # TODO (students): choose the damping ratio and rate limit yourself and
     # justify them in the report. This natural frequency meets the public
     # smooth-start and settling checks.
-    wn: float = 0.4                     # natural frequency [rad/s]
+    wn: float = 0.03                     # natural frequency [rad/s]
     zeta: float = 1.0                   # damping ratio [-] (placeholder)
     rate_limit: Optional[float] = None  # max |x_dot| (m/s or rad/s); None = off
 

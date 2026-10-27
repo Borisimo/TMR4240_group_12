@@ -61,7 +61,7 @@ class RefAxisConfig:
     # TODO (students): wn below is a placeholder, NOT a tuned value. Choose
     # the natural frequency yourself and justify it in the report (see the
     # project text, Reference Model section).
-    wn: float = 0.022#0.03                     # natural frequency [rad/s] (to be tuned)
+    wn: float = 0.3#0.03                     # natural frequency [rad/s] (to be tuned)
     zeta: float = 1.0                   # damping ratio [-]
     rate_limit: Optional[float] = None  # max |x_dot| (m/s or rad/s); None = off
 
@@ -79,13 +79,13 @@ M = M_RB + M_A
 
 @dataclass
 class PIDGains:
-    wn_N   = 0.123    #0.1150
-    wn_E   = 0.123    #0.1170
-    wn_psi = 0.132    #0.0860
+    wn_N   = 0.18 #0.123    #0.1150
+    wn_E   = 0.17 #0.123    #0.1170
+    wn_psi = 0.28 #0.132    #0.0860
 
-    zeta_N   = 1.0  #1.4
-    zeta_E   = 1.0  #1.4
-    zeta_psi = 1.0  #1.4
+    zeta_N   = 1.6  #1.4
+    zeta_E   = 0.7  #1.4
+    zeta_psi = 2.0  #1.4
 
     Kp: np.ndarray = field(init=False)
     Ki: np.ndarray = field(init=False)
@@ -99,9 +99,9 @@ class PIDGains:
         ])
             
         self.Ki = np.array([
-            (self.wn_N/15) * self.Kp[0], 
-            (self.wn_E/15) * self.Kp[1], 
-            (self.wn_psi/15) * self.Kp[2]
+            (self.wn_N/25) * self.Kp[0], 
+            (self.wn_E/18) * self.Kp[1], 
+            (self.wn_psi/5) * self.Kp[2]
         ])
             
         self.Kd = np.array([

@@ -101,7 +101,12 @@ class Wind:
         self.sigma_slow = float(sigma_slow)
         self.tau_slow = float(tau_slow)
         self.gust = bool(gust)
-        self.gust_params = {"sigma": 1.0, "tau": 5.0}
+        self.gust_params = {"sigma": 1.0, "tau": 5.0,
+                    "spectrum": "norsok",   # "markov" = current behaviour, "norsok" = new
+                    "U10": None,            # None -> use mean_speed
+                    "z": 10.0, "n_freq": 100,
+                    "f_min": 0.01,          # [Hz] below this the slow component (sigma_slow) takes over
+                    "f_max": 0.5}
         if gust_params is not None:
             unknown = set(gust_params) - self.gust_params.keys()
             if unknown:
@@ -134,6 +139,9 @@ class Wind:
         self._u_slow = 0.0
         self._u_gust = 0.0
         self._dir_slow = 0.0
+        self._seed = seed
+        if self.gust and self.gust_params["spectrum"] == "norsok":
+            self._build_norsok_gust(seed)
 
     def _interp_coeff(self, alpha_rw_deg: float) -> np.ndarray:
         """Interpolate C(alpha) at a relative wind angle, wrapping at 360°."""
@@ -144,6 +152,20 @@ class Wind:
         )
         C_ext = np.vstack([self._C6[-1], self._C6, self._C6[0]])
         return np.array([np.interp(alpha, alpha_ext, C_ext[:, j]) for j in range(6)])
+
+    def _build_norsok_gust(self, seed):
+        p = self.gust_params
+        U10 = max(p["U10"] if p["U10"] is not None else self.mean_speed, 1e-6)
+        z, n = p["z"], 0.468
+        edges = np.logspace(np.log10(p["f_min"]), np.log10(p["f_max"]), int(p["n_freq"]) + 1)
+        rng = np.random.default_rng(None if seed is None else [seed, 1])  # separate stream
+        f = rng.uniform(edges[:-1], edges[1:])      # random frequency in each bin: no periodic repeat
+        df = np.diff(edges)
+        x = 172.0 * f * (z / 10) ** (2 / 3) * (U10 / 10) ** (-3 / 4)
+        S = 320.0 * (U10 / 10) ** 2 * (z / 10) ** 0.45 / (1 + x ** n) ** (5 / (3 * n))
+        self._g_amp = np.sqrt(2.0 * S * df)         # a_i = sqrt(2 S(f_i) df_i)
+        self._g_w = 2.0 * np.pi * f
+        self._g_phi = rng.uniform(0.0, 2.0 * np.pi, f.size)   # seeded random phases
 
     def step(
         self,
@@ -165,7 +187,9 @@ class Wind:
             self._u_slow = a * self._u_slow + b * self._rng.standard_normal()
         U_mean = self.mean_speed + self._u_slow
 
-        if self.gust and self.gust_params["sigma"] > 0.0:
+        if self.gust and self.gust_params["spectrum"] == "norsok":
+            self._u_gust = float(np.sum(self._g_amp * np.cos(self._g_w * t + self._g_phi)))
+        elif self.gust and self.gust_params["sigma"] > 0.0:
             a_gust = np.exp(-dt / self.gust_params["tau"])
             b_gust = self.gust_params["sigma"] * np.sqrt(1.0 - a_gust**2)
             self._u_gust = a_gust * self._u_gust + b_gust * self._rng.standard_normal()

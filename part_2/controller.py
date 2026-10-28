@@ -64,6 +64,9 @@ class DPController:
         self.Kd = np.diag(gains.Kd)
         self.int_ned = np.zeros(2)
         self.int_psi = 0.0
+        self._last_tau_cmd3 = None
+        self._last_int_inc = np.zeros(3)
+
 
         # Diagonal mass/inertia for the inertia feedforward term below.
         # Matches the same diagonal-only simplification Kp/Kd already use.
@@ -137,6 +140,7 @@ class DPController:
         return tau_d
     
     def apply_external_aw(self, tau_applied, psi, dt):
+
         tau_applied3 = np.array([
             tau_applied[0], 
             tau_applied[1], 

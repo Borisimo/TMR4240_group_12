@@ -58,7 +58,7 @@ plt.rcParams["figure.max_open_warning"] = 60
 DT = 0.1
 CURRENT_SPEED, CURRENT_FROM = 0.2, np.deg2rad(90.0)       # 0.2 m/s from east
 WIND_SPEED, WIND_FROM = 10.0, np.deg2rad(0.0)             # 10 m/s from north
-WAVES_HS, WAVES_TP, WAVES_FROM = 1.5, 8.0, np.deg2rad(45.0)   # design sea, from north-east
+WAVES_HS, WAVES_TP, WAVES_FROM = 0.5, 8.0, np.deg2rad(45.0)   # design sea, from north-east
 ROBUST_HS, ROBUST_TP = 2.5, 10.0                          # Simulation 6 (heavy sea for a vessel of this size, Lpp 34 m)
 CAP_WIND, CAP_CURRENT, CAP_HS, CAP_TP = 12.0, 0.2, 1.5, 8.0   # Simulation 5
 CAP_POS_LIMIT, CAP_PSI_LIMIT_DEG = 5.0, 5.0               # DP watch circles (max LF excursion)
@@ -71,7 +71,7 @@ SEED = 123
 # there first, then set this to "nonlinear_passive" or "kalman" and justify
 # the choice in the report.  It is None until you choose: every preset that
 # needs it stops with a message instead of picking one for you.
-SELECTED_OBSERVER = None
+SELECTED_OBSERVER = "kalman"
 
 # Initial observer error used by the convergence demonstration in Part 2,
 # Simulation 4.  The engine resets every observer at the TRUE initial pose, so
@@ -80,7 +80,7 @@ SELECTED_OBSERVER = None
 # choose your own, and say in the report what it is and why it is a fair test.
 OBSERVER_OFFSET = np.array([5.0, -5.0, 0.0, 0.0, 0.0, np.deg2rad(10.0)])
 
-SCENARIO = "sim2"          # default scenario when run without arguments
+SCENARIO = "sim3"          # default scenario when run without arguments
 
 
 # ---------------------------------------------------------------------------

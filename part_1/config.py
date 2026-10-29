@@ -79,13 +79,13 @@ M = M_RB + M_A
 
 @dataclass
 class PIDGains:
-    wn_N   = 0.18 #0.123    #0.1150
-    wn_E   = 0.17 #0.123    #0.1170
-    wn_psi = 0.28 #0.132    #0.0860
+    wn_N   = 0.216 #0.123    #0.1150
+    wn_E   = 0.239 #0.123    #0.1170
+    wn_psi = 0.467 #0.132    #0.0860
 
-    zeta_N   = 1.6  #1.4
-    zeta_E   = 0.7  #1.4
-    zeta_psi = 2.0  #1.4
+    zeta_N   = 0.60  #1.4
+    zeta_E   = 0.51  #1.4
+    zeta_psi = 1.65  #1.4
 
     Kp: np.ndarray = field(init=False)
     Ki: np.ndarray = field(init=False)
@@ -99,9 +99,9 @@ class PIDGains:
         ])
             
         self.Ki = np.array([
-            (self.wn_N/25) * self.Kp[0], 
-            (self.wn_E/18) * self.Kp[1], 
-            (self.wn_psi/5) * self.Kp[2]
+            (self.wn_N/18.4) * self.Kp[0], 
+            (self.wn_E/19.7) * self.Kp[1], 
+            (self.wn_psi/9.5) * self.Kp[2]
         ])
             
         self.Kd = np.array([

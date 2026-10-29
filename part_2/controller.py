@@ -46,7 +46,7 @@ own runs but fail the checks.
 """
 import numpy as np
 from simulation.utils import Rz, angle_diff
-from part_1.config import PIDGains, M
+from part_1.config import PIDGains, M, D_l
 
 class DPController:
     """
@@ -71,12 +71,15 @@ class DPController:
         # Diagonal mass/inertia for the inertia feedforward term below.
         # Matches the same diagonal-only simplification Kp/Kd already use.
         self.M_diag = np.array([M[0, 0], M[1, 1], M[2, 2]])
+        self.D_diag = np.array([D_l[0, 0], D_l[1, 1], D_l[2, 2]])
 
     def reset(self) -> None:
         """Optional: reset internal states (integrators, filters) before a run."""
         #pass
         self.int_ned = np.zeros(2)
         self.int_psi = 0.0
+        self._last_tau_cmd3 = None # Making it so the previous simulation doesnt carry over.
+        self._last_int_inc = np.zeros(3)
 
     def compute(
         self,
@@ -111,7 +114,7 @@ class DPController:
         # instead of only reacting once a tracking error has built up --
         # this is what actually closes the r-tracking lag, not more damping.
         acc_ref_body = R.T @ np.array([acc_ref[0], acc_ref[1], acc_ref[5]])
-        tau_ff = self.M_diag * acc_ref_body
+        tau_ff = self.M_diag * acc_ref_body + self.D_diag * nu_ref_body
 
         # integral (kept in NED, then rotated)
         self._last_int_inc = e_ned * dt  # undone by apply_external_aw if saturated
@@ -140,6 +143,8 @@ class DPController:
         return tau_d
     
     def apply_external_aw(self, tau_applied, psi, dt):
+        if self._last_tau_cmd3 is None:   # DP off: compute() never ran, nothing to wind up
+            return
 
         tau_applied3 = np.array([
             tau_applied[0], 

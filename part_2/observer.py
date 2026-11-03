@@ -154,7 +154,7 @@ class NonlinearPassiveObserver(Observer):
                             )
 
         # Updating states
-        self.xi_hat = self.xi_next
+        self.xi_hat = xi_next
         self.eta_hat = self.eta_hat + dt * eta_dot
         self.b_hat = self.b_hat + dt * b_dot
         self.nu_hat = self.nu_hat + dt * nu_dot

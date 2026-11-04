@@ -23,6 +23,7 @@ checks call ``select_observer(kind)`` without arguments.
 from __future__ import annotations
 from models.gunnerus_3dof import Gunnerus3DOF
 from dataclasses import dataclass
+from scipy.linalg import expm
 import numpy as np
 
 
@@ -72,26 +73,36 @@ class NonlinearPassiveObserver(Observer):
             zeta_n: float = 1.0,
             wc: float = 1.2 * (2 * np.pi) / 8,
             T_bias: float = 1000.0,
-            k3: float = 0.1,
-            k4: float = 0.02,
+            k3: float = 0.02,
+            k4: float = 0.08,
     ):
         
         omega = np.diag([w0, w0, w0])
         ones = np.ones(3)
+
+        # Vessel, mass, added mass and linear damping
         vessel = Gunnerus3DOF()._v
         self.M = vessel._Mrb + vessel._Ma
         self.M_inv = np.linalg.inv(self.M)
         self.D = vessel._Dl.copy()
+
+        # Wave model
         Z = np.diag([zeta, zeta, zeta])
         self.A_w = np.block([[np.zeros((3, 3)), np.eye(3)],
                             [-omega**2, -2 * Z @ omega]])
         self.C_w = np.hstack([np.zeros((3, 3)), np.eye(3)])
+
+        # Observer gains. K1, K2 gives notch effect + low pass
         self.K1 = np.vstack([np.diag(-2.0 * (zeta_n - zeta) * wc / w0 * ones),
                             np.diag(2.0 * w0 * (zeta_n - zeta) * ones)])
         self.K2 = np.diag(wc * ones)
+
+        # K4 scaled by mass and K3 = k3 * k4 to satisfy passivity
         self.K4 = np.diag(np.diag(self.M) * k4)
         self.K3 = k3 * self.K4
         self.T_inv = np.eye(3) / T_bias
+    
+        self._dt_cached = None 
         self.reset()
         
 
@@ -106,21 +117,34 @@ class NonlinearPassiveObserver(Observer):
     def _wrap(angle):
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
+    def _discretize(self, dt):
+        self.phi_w = expm(self.A_w * dt)
+        self.gamma_w = np.linalg.solve(self.A_w, self.phi_w - np.eye(6))
+        self._dt_cached = dt
+
     def step(self, t, dt, eta_measured, tau_est):
+        if self._dt_cached != dt:
+            self._discretize(dt)
+            
+        # MEasured pose and previously commanded wrench
         y = np.asarray(eta_measured, dtype=float).reshape(6)[[0, 1, 5]]
         tau = np.asarray(tau_est, dtype=float).reshape(6)[[0, 1, 5]]
 
+        # Measured - estimated pose
         y_hat = self.eta_hat + self.C_w @ self.xi_hat
         y_tilde = y - y_hat
         y_tilde[2] = self._wrap(y_tilde[2])
 
-        psi = self.eta_hat[2]
+        # Rotating Body to NED and using measured heading
+        psi = y[2]
         c, s = np.cos(psi), np.sin(psi)
         R = np.array([[c, -s, 0],
                       [s, c, 0],
                       [0, 0, 1]])
 
-        xi_dot = self.A_w @ self.xi_hat + self.K1 @ y_tilde
+        # xi_dot = self.A_w @ self.xi_hat + self.K1 @ y_tilde
+        # Wave freq, LF pose, Bias, and Velocity
+        xi_next = self.phi_w @ self.xi_hat + self.gamma_w @ self.K1 @ y_tilde
         eta_dot = R @ self.nu_hat + self.K2 @y_tilde
         b_dot = - self.T_inv @self.b_hat + self.K3 @ y_tilde
         nu_dot = self.M_inv @ (-self.D @ self.nu_hat
@@ -129,12 +153,14 @@ class NonlinearPassiveObserver(Observer):
                                + R.T @ self.K4 @ y_tilde
                             )
 
-        self.xi_hat = self.xi_hat + dt * xi_dot
+        # Updating states
+        self.xi_hat = xi_next
         self.eta_hat = self.eta_hat + dt * eta_dot
         self.b_hat = self.b_hat + dt * b_dot
         self.nu_hat = self.nu_hat + dt * nu_dot
         self.eta_hat[2] = self._wrap(self.eta_hat[2])
 
+        # Putting estimates into 6-DOF vectors
         eta = np.zeros(6)
         nu = np.zeros(6)
         bias = np.zeros(6)

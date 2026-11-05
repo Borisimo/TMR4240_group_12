@@ -220,7 +220,7 @@ class KalmanFilterObserver(Observer):
         p_velocity: float = 0.5**2,
         p_yaw_rate: float = np.deg2rad(0.5) ** 2,
         p_bias: float = 1e8,
-        p_bias_yaw: float = 1e12,
+        p_bias_yaw: float = 1e4, # 1e12,
     ):
         parameters = {
             "w0": w0,

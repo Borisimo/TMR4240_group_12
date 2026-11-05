@@ -80,7 +80,7 @@ SELECTED_OBSERVER = "kalman"
 # choose your own, and say in the report what it is and why it is a fair test.
 OBSERVER_OFFSET = np.array([5.0, -5.0, 0.0, 0.0, 0.0, np.deg2rad(10.0)])
 
-SCENARIO = "sim3"          # default scenario when run without arguments
+SCENARIO = "sim7"          # default scenario when run without arguments
 
 
 # ---------------------------------------------------------------------------
@@ -320,13 +320,85 @@ def sim6():
     return logs
 
 
+"""
 def sim7():
-    """Part 2, Simulation 7 — your own showcase.  Design it, explain it, discuss it."""
+    #Part 2, Simulation 7 — your own showcase.  Design it, explain it, discuss it.
     # TODO (students): replace this with your own scenario.
     cfg = Part2SimConfig(dt=DT, T=600.0, use_observer=True, observer_type=selected_observer())
     logs = run(cfg, np.zeros(6), environment())
     standard_plots(logs, observer=True)
     return logs
+"""
+
+def sim7():
+    """Part 2, Simulation 7 — four-corner test side by side: no observer, Kalman and nonlinear passive (env + sensor noise)."""
+    hold = 300.0
+    cases = [("No observer (raw noisy measurements)", False, "kalman"),
+             ("Kalman observer", True, "kalman"),
+             ("Nonlinear passive observer", True, "nonlinear_passive")]
+    out = {}
+    fig = plt.figure(figsize=(16, 10), layout="constrained")
+    gs = fig.add_gridspec(2, 3, height_ratios=[3, 1.3])
+    axes = [fig.add_subplot(gs[0, 0])]
+    axes += [fig.add_subplot(gs[0, i], sharex=axes[0], sharey=axes[0]) for i in (1, 2)]
+    ax_pos, ax_thr, ax_yaw = (fig.add_subplot(gs[1, i]) for i in range(3))
+    for ax, (label, use_obs, kind) in zip(axes, cases):
+        cfg = Part2SimConfig(dt=DT, T=5 * hold, use_reference=True, use_observer=use_obs,
+                             observer_type=kind, use_sensor_noise=True)
+        logs = run(cfg, four_corner_commands(cfg, hold), environment())
+        out[label] = logs
+        err = np.hypot(*(logs.eta[:, :2] - logs.sp[:, :2]).T)       # distance to the moving set-point
+        ax_pos.plot(logs.t, err, lw=0.8, label=label)
+        ax_thr.plot(logs.t, np.abs(logs.u).sum(1) * 1e-3, lw=0.8, label=label)
+        ax_yaw.plot(logs.t, logs.tau_d[:, 5] * 1e-3, lw=0.8, label=label)
+        c = logs.cmd[:, [1, 0]]
+        sp = c[np.r_[True, np.any(np.diff(c, axis=0) != 0, axis=1)]]    # corners in visiting order
+        ax.plot(sp[:, 0], sp[:, 1], "k--", lw=1, alpha=0.5, label="corner set-points")
+        ax.plot(sp[:, 0], sp[:, 1], "kx", ms=10)
+        ax.plot(logs.eta[:, 1], logs.eta[:, 0], label="true trajectory")
+        ax.plot(logs.eta[0, 1], logs.eta[0, 0], "o", label="start")
+        ax.plot(logs.eta[-1, 1], logs.eta[-1, 0], "s", label="end")
+        ax.set_title(label)
+        ax.set_xlabel("East [m]")
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.3)
+    axes[0].set_ylabel("North [m]")
+    axes[0].legend(loc="best", fontsize=8)
+    for a, yl, ttl in ((ax_pos, "[m]", "Position error to set-point"),
+                       (ax_thr, "[kN]", "Total thrust  sum |u|"),
+                       (ax_yaw, "[kNm]", "Controller yaw demand")):
+        a.set_title(ttl)
+        a.set_ylabel(yl)
+        a.set_xlabel("Time [s]")
+        a.grid(True, alpha=0.3)
+    ax_pos.legend(fontsize=8)
+    fig.suptitle("Four-corner test, same environment and sensor noise")
+
+    # --- thruster interaction: one column per case ---------------------------------
+    fig2, ax2 = plt.subplots(4, 3, figsize=(16, 11), sharex=True, layout="constrained")
+    for j, (label, logs) in enumerate(out.items()):
+        for i, name in enumerate(logs.thruster_names):
+            ax2[0, j].plot(logs.t, logs.u[:, i] * 1e-3, lw=0.8, color=f"C{i}", label=name)
+            if i > 0:                                                  # azimuths only (tunnel is fixed)
+                ax2[1, j].plot(logs.t, np.rad2deg(logs.alpha[:, i]), lw=0.8, color=f"C{i}", label=name)
+        ax2[2, j].plot(logs.t, np.rad2deg(np.angle(np.exp(1j * (logs.alpha[:, 1] - logs.alpha[:, 2])))),
+                       color="k", lw=0.8)
+        # thrust spent vs. force actually delivered: the gap is thrust the thrusters spend against each other
+        spent = np.abs(logs.u).sum(1) * 1e-3
+        delivered = np.hypot(logs.tau_thr[:, 0], logs.tau_thr[:, 1]) * 1e-3
+        ax2[3, j].plot(logs.t, spent, lw=0.8, label="sum |u| spent")
+        ax2[3, j].plot(logs.t, delivered, lw=0.8, label="|F| delivered")
+        ax2[0, j].set_title(label)
+        ax2[3, j].set_xlabel("Time [s]")
+    for r, yl in enumerate(["Thrust [kN]", "Azimuth angle [deg]", "Az1 - Az2 [deg]", "Force [kN]"]):
+        ax2[r, 0].set_ylabel(yl)
+        for a in ax2[r]:
+            a.grid(True, alpha=0.3)
+    ax2[0, 0].legend(fontsize=8)
+    ax2[1, 0].legend(fontsize=8)
+    ax2[3, 0].legend(fontsize=8)
+    fig2.suptitle("Thruster dynamics and interaction (gap between the bottom curves = thrust spent against each other)")
+    return out
 
 
 def bonus_sensor_noise():

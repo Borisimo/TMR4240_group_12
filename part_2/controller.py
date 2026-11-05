@@ -152,11 +152,7 @@ class DPController:
             tau_applied[5]
             ])
         
-        tau_cmd3 = self._last_tau_cmd3#np.array([
-            #self.last_pid_body["P"][0]+self.last_pid_body["I"][0]+self.last_pid_body["D"][0],
-            #self.last_pid_body["P"][1]+self.last_pid_body["I"][1]+self.last_pid_body["D"][1],
-            #self.last_pid_body["P"][5]+self.last_pid_body["I"][5]+self.last_pid_body["D"][5]
-            #])
+        tau_cmd3 = self._last_tau_cmd3
         
         # Conditional integration: if the thrusters could not deliver the
         # command, undo this step's integration instead of back-calculating

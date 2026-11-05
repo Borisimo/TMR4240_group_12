@@ -79,13 +79,13 @@ M = M_RB + M_A
 
 @dataclass
 class PIDGains:
-    wn_N   = 0.216 #0.123    #0.1150
-    wn_E   = 0.239 #0.123    #0.1170
-    wn_psi = 0.467 #0.132    #0.0860
+    wn_N   = 0.183 
+    wn_E   = 0.163 
+    wn_psi = 0.32 
 
-    zeta_N   = 0.60  #1.4
-    zeta_E   = 0.51  #1.4
-    zeta_psi = 1.65  #1.4
+    zeta_N   = 0.64 
+    zeta_E   = 0.41 
+    zeta_psi = 1.10  
 
     Kp: np.ndarray = field(init=False)
     Ki: np.ndarray = field(init=False)
@@ -99,9 +99,9 @@ class PIDGains:
         ])
             
         self.Ki = np.array([
-            (self.wn_N/18.4) * self.Kp[0], 
-            (self.wn_E/19.7) * self.Kp[1], 
-            (self.wn_psi/9.5) * self.Kp[2]
+            (self.wn_N/22.6) * self.Kp[0], 
+            (self.wn_E/24.3) * self.Kp[1], 
+            (self.wn_psi/4.5) * self.Kp[2]
         ])
             
         self.Kd = np.array([
@@ -109,7 +109,6 @@ class PIDGains:
             2*self.zeta_E*self.wn_E * M[1,1] - D_l[1,1], 
             2*self.zeta_psi*self.wn_psi * M[2,2] - D_l[2,2]
         ])
-
 
 
 def default_thrusters_gunnerus3() -> list[ThrusterConfig]:

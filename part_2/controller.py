@@ -66,12 +66,12 @@ class DPController:
         self.int_psi = 0.0
         self._last_tau_cmd3 = None
         self._last_int_inc = np.zeros(3)
+        self._last_e_ned = np.zeros(3)
 
-
-        # Diagonal mass/inertia for the inertia feedforward term below.
-        # Matches the same diagonal-only simplification Kp/Kd already use.
-        self.M_diag = np.array([M[0, 0], M[1, 1], M[2, 2]])
-        self.D_diag = np.array([D_l[0, 0], D_l[1, 1], D_l[2, 2]])
+        # Shortfall tolerance for anti-windup: 3 % of the rough per-axis
+        # capacity (surge/sway 2x80 kN, yaw ~2x80 kN x 13 m). Smaller
+        # shortfalls are thrust-rate lag, not saturation.
+        self.aw_tol = 0.3 * np.array([160e3, 160e3, 2.0e6])
 
     def reset(self) -> None:
         """Optional: reset internal states (integrators, filters) before a run."""
@@ -80,6 +80,7 @@ class DPController:
         self.int_psi = 0.0
         self._last_tau_cmd3 = None # Making it so the previous simulation doesnt carry over.
         self._last_int_inc = np.zeros(3)
+        self._last_e_ned = np.zeros(3)
 
     def compute(
         self,
@@ -94,6 +95,8 @@ class DPController:
 
         if nu_ref is None:
             nu_ref = np.zeros(6)
+        if acc_ref is None:
+            acc_ref = np.zeros(6)
 
         psi = eta[5]
         R = Rz(psi) # NED = R @ body (3x3) -> [N,E,psi]
@@ -114,9 +117,10 @@ class DPController:
         # instead of only reacting once a tracking error has built up --
         # this is what actually closes the r-tracking lag, not more damping.
         acc_ref_body = R.T @ np.array([acc_ref[0], acc_ref[1], acc_ref[5]])
-        tau_ff = self.M_diag * acc_ref_body + self.D_diag * nu_ref_body
+        tau_ff = M @ acc_ref_body + D_l @ nu_ref_body
 
         # integral (kept in NED, then rotated)
+        self._last_e_ned = e_ned.copy()
         self._last_int_inc = e_ned * dt  # undone by apply_external_aw if saturated
         self.int_ned += e_ned[:2] * dt
         self.int_psi += e_ned[2] * dt
@@ -143,21 +147,22 @@ class DPController:
         return tau_d
     
     def apply_external_aw(self, tau_applied, psi, dt):
-        if self._last_tau_cmd3 is None:   # DP off: compute() never ran, nothing to wind up
+        if self._last_tau_cmd3 is None:
             return
 
-        tau_applied3 = np.array([
-            tau_applied[0], 
-            tau_applied[1], 
-            tau_applied[5]
-            ])
-        
-        tau_cmd3 = self._last_tau_cmd3
-        
-        # Conditional integration: if the thrusters could not deliver the
-        # command, undo this step's integration instead of back-calculating
-        # (back-calculation drove I to cancel P after large steps).
-        unachieved = tau_cmd3 - tau_applied3
-        if np.linalg.norm(unachieved) > 1e-3 * max(np.linalg.norm(tau_cmd3), 1.0):
-            self.int_ned -= self._last_int_inc[:2]
-            self.int_psi -= self._last_int_inc[2]
+        R = Rz(psi)
+        applied = np.array([tau_applied[0], tau_applied[1], tau_applied[5]])
+        short = self._last_tau_cmd3 - applied            # body frame, per axis
+
+        e_body = R.T @ self._last_e_ned                  # stored by compute()
+
+        # real shortfall = more than ~3% of capacity, not 0.1% of the command
+        freeze = (np.abs(short) > self.aw_tol) & (short * e_body > 0.0)
+        if not freeze.any():
+            return
+
+        # undo this step's integration only on the frozen axes
+        undo_body = np.where(freeze, R.T @ self._last_int_inc, 0.0)
+        undo_ned = R @ undo_body
+        self.int_ned -= undo_ned[:2]
+        self.int_psi -= undo_ned[2]

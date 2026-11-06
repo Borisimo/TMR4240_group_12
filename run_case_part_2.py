@@ -336,68 +336,57 @@ def sim7():
     cases = [("No observer (raw noisy measurements)", False, "kalman"),
              ("Kalman observer", True, "kalman"),
              ("Nonlinear passive observer", True, "nonlinear_passive")]
-    out = {}
-    fig = plt.figure(figsize=(16, 10), layout="constrained")
-    gs = fig.add_gridspec(2, 3, height_ratios=[3, 1.3])
-    axes = [fig.add_subplot(gs[0, 0])]
-    axes += [fig.add_subplot(gs[0, i], sharex=axes[0], sharey=axes[0]) for i in (1, 2)]
-    ax_pos, ax_thr, ax_yaw = (fig.add_subplot(gs[1, i]) for i in range(3))
-    for ax, (label, use_obs, kind) in zip(axes, cases):
+    out, rows = {}, []
+    fig = plt.figure(figsize=(14, 8), layout="constrained")
+    gs = fig.add_gridspec(3, 2, width_ratios=[1.1, 1])
+    ax_traj = fig.add_subplot(gs[:, 0])
+    ax_pos = fig.add_subplot(gs[0, 1])
+    ax_thr = fig.add_subplot(gs[1, 1], sharex=ax_pos)
+    ax_yaw = fig.add_subplot(gs[2, 1], sharex=ax_pos)
+    for i, (label, use_obs, kind) in enumerate(cases):
+        col = f"C{i}"
         cfg = Part2SimConfig(dt=DT, T=5 * hold, use_reference=True, use_observer=use_obs,
                              observer_type=kind, use_sensor_noise=True)
         logs = run(cfg, four_corner_commands(cfg, hold), environment())
         out[label] = logs
         err = np.hypot(*(logs.eta[:, :2] - logs.sp[:, :2]).T)       # distance to the moving set-point
-        ax_pos.plot(logs.t, err, lw=0.8, label=label)
-        ax_thr.plot(logs.t, np.abs(logs.u).sum(1) * 1e-3, lw=0.8, label=label)
-        ax_yaw.plot(logs.t, logs.tau_d[:, 5] * 1e-3, lw=0.8, label=label)
-        c = logs.cmd[:, [1, 0]]
-        sp = c[np.r_[True, np.any(np.diff(c, axis=0) != 0, axis=1)]]    # corners in visiting order
-        ax.plot(sp[:, 0], sp[:, 1], "k--", lw=1, alpha=0.5, label="corner set-points")
-        ax.plot(sp[:, 0], sp[:, 1], "kx", ms=10)
-        ax.plot(logs.eta[:, 1], logs.eta[:, 0], label="true trajectory")
-        ax.plot(logs.eta[0, 1], logs.eta[0, 0], "o", label="start")
-        ax.plot(logs.eta[-1, 1], logs.eta[-1, 0], "s", label="end")
-        ax.set_title(label)
-        ax.set_xlabel("East [m]")
-        ax.set_aspect("equal", adjustable="box")
-        ax.grid(True, alpha=0.3)
-    axes[0].set_ylabel("North [m]")
-    axes[0].legend(loc="best", fontsize=8)
+        dpsi = np.rad2deg(np.angle(np.exp(1j * (logs.eta[:, 5] - logs.sp[:, 5]))))
+        rows.append([label,
+                     np.sqrt(np.mean(err ** 2)),                          # RMS position error [m]
+                     err.max(),                                           # max position error [m]
+                     np.sqrt(np.mean(dpsi ** 2)),                         # RMS heading error [deg]
+                     np.abs(logs.u).sum(1).mean() * 1e-3,                 # mean sum|u| [kN]
+                     np.sqrt(np.mean(logs.tau_d[:, 5] ** 2)) * 1e-3])     # RMS yaw demand [kNm]
+        ax_pos.plot(logs.t, err, lw=0.8, color=col, label=label)
+        ax_thr.plot(logs.t, np.abs(logs.u).sum(1) * 1e-3, lw=0.8, color=col, label=label)
+        ax_yaw.plot(logs.t, logs.tau_d[:, 5] * 1e-3, lw=0.8, color=col, label=label)
+        if i == 0:
+            c = logs.cmd[:, [1, 0]]
+            sp = c[np.r_[True, np.any(np.diff(c, axis=0) != 0, axis=1)]]    # corners in visiting order
+            ax_traj.plot(sp[:, 0], sp[:, 1], "k--", lw=1, alpha=0.5, label="corner set-points")
+            ax_traj.plot(sp[:, 0], sp[:, 1], "kx", ms=10)
+            ax_traj.plot(logs.eta[0, 1], logs.eta[0, 0], "ko", label="start")
+        ax_traj.plot(logs.eta[:, 1], logs.eta[:, 0], lw=1.0, color=col, label=label)
+    ax_traj.set_xlabel("East [m]")
+    ax_traj.set_ylabel("North [m]")
+    ax_traj.set_aspect("equal", adjustable="box")
+    ax_traj.grid(True, alpha=0.3)
+    ax_traj.legend(loc="best", fontsize=8)
     for a, yl, ttl in ((ax_pos, "[m]", "Position error to set-point"),
                        (ax_thr, "[kN]", "Total thrust  sum |u|"),
                        (ax_yaw, "[kNm]", "Controller yaw demand")):
         a.set_title(ttl)
         a.set_ylabel(yl)
-        a.set_xlabel("Time [s]")
         a.grid(True, alpha=0.3)
-    ax_pos.legend(fontsize=8)
+    ax_yaw.set_xlabel("Time [s]")
     fig.suptitle("Four-corner test, same environment and sensor noise")
 
-    # --- thruster interaction: one column per case ---------------------------------
-    fig2, ax2 = plt.subplots(4, 3, figsize=(16, 11), sharex=True, layout="constrained")
-    for j, (label, logs) in enumerate(out.items()):
-        for i, name in enumerate(logs.thruster_names):
-            ax2[0, j].plot(logs.t, logs.u[:, i] * 1e-3, lw=0.8, color=f"C{i}", label=name)
-            if i > 0:                                                  # azimuths only (tunnel is fixed)
-                ax2[1, j].plot(logs.t, np.rad2deg(logs.alpha[:, i]), lw=0.8, color=f"C{i}", label=name)
-        ax2[2, j].plot(logs.t, np.rad2deg(np.angle(np.exp(1j * (logs.alpha[:, 1] - logs.alpha[:, 2])))),
-                       color="k", lw=0.8)
-        # thrust spent vs. force actually delivered: the gap is thrust the thrusters spend against each other
-        spent = np.abs(logs.u).sum(1) * 1e-3
-        delivered = np.hypot(logs.tau_thr[:, 0], logs.tau_thr[:, 1]) * 1e-3
-        ax2[3, j].plot(logs.t, spent, lw=0.8, label="sum |u| spent")
-        ax2[3, j].plot(logs.t, delivered, lw=0.8, label="|F| delivered")
-        ax2[0, j].set_title(label)
-        ax2[3, j].set_xlabel("Time [s]")
-    for r, yl in enumerate(["Thrust [kN]", "Azimuth angle [deg]", "Az1 - Az2 [deg]", "Force [kN]"]):
-        ax2[r, 0].set_ylabel(yl)
-        for a in ax2[r]:
-            a.grid(True, alpha=0.3)
-    ax2[0, 0].legend(fontsize=8)
-    ax2[1, 0].legend(fontsize=8)
-    ax2[3, 0].legend(fontsize=8)
-    fig2.suptitle("Thruster dynamics and interaction (gap between the bottom curves = thrust spent against each other)")
+    # --- metrics table (whole run) ------------------------------------
+    header = ["case", "RMS pos. [m]", "max pos. [m]", "RMS head. [deg]", "mean sum|u| [kN]", "RMS yaw demand [kNm]"]
+    print("\nSimulation 7 metrics (whole run, t >= 0 s):")
+    print(" & ".join(header) + " \\\\")
+    for label, *vals in rows:
+        print(f"{label} & " + " & ".join(f"{v:.{d}f}" for v, d in zip(vals, (2, 2, 2, 1, 0))) + " \\\\")
     return out
 
 

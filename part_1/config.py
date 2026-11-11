@@ -61,7 +61,7 @@ class RefAxisConfig:
     # TODO (students): wn below is a placeholder, NOT a tuned value. Choose
     # the natural frequency yourself and justify it in the report (see the
     # project text, Reference Model section).
-    wn: float = 0.3#0.03                     # natural frequency [rad/s] (to be tuned)
+    wn: float = 0.03#0.03                     # natural frequency [rad/s] (to be tuned)
     zeta: float = 1.0                   # damping ratio [-]
     rate_limit: Optional[float] = None  # max |x_dot| (m/s or rad/s); None = off
 
